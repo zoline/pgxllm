@@ -47,22 +47,32 @@ def _run_migrations(registry) -> None:
             id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
             db_alias        TEXT        NOT NULL,
             eval_name       TEXT        NOT NULL DEFAULT '',
-            question_id     INTEGER,
+            question_id     TEXT,
             question        TEXT        NOT NULL,
+            hint            TEXT        NOT NULL DEFAULT '',
+            difficulty      TEXT        NOT NULL DEFAULT 'simple',
             gold_sql        TEXT        NOT NULL,
             baseline_sql    TEXT,
-            pipeline_sql    TEXT,
-            baseline_ok     BOOLEAN,
-            pipeline_ok     BOOLEAN,
-            baseline_ex     BOOLEAN,
-            pipeline_ex     BOOLEAN,
+            pgxllm_sql      TEXT,
+            ex_baseline     BOOLEAN,
+            ex_pgxllm       BOOLEAN,
             error_baseline  TEXT,
-            error_pipeline  TEXT,
-            duration_ms     INTEGER,
+            error_pgxllm    TEXT,
+            baseline_ms     INTEGER     NOT NULL DEFAULT 0,
+            pgxllm_ms       INTEGER     NOT NULL DEFAULT 0,
             created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS idx_eval_results_db ON eval_results(db_alias, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_eval_results_name ON eval_results(db_alias, eval_name)",
+        # eval_results 스키마 v2: BIRDEvalRunner 필드명에 맞춤
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS hint       TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS difficulty TEXT    NOT NULL DEFAULT 'simple'",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS pgxllm_sql TEXT",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS ex_baseline BOOLEAN",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS ex_pgxllm  BOOLEAN",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS error_pgxllm TEXT",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS baseline_ms INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE eval_results ADD COLUMN IF NOT EXISTS pgxllm_ms  INTEGER NOT NULL DEFAULT 0",
     ]
     for sql in stmts:
         try:
@@ -1475,150 +1485,87 @@ def patterns_list():
 # API — /api/eval  (BIRD Benchmark 평가)
 # ══════════════════════════════════════════════════════════════
 
-import json as _json
 import time as _time_mod
 
 
 class EvalRunRequest(BaseModel):
-    db_alias:   str
-    eval_name:  str = ""
-    items:      list   # [{question_id, question, gold_sql}, ...]
-    run_baseline: bool = True   # LLM 직접 생성 (S1 only)
-    run_pipeline: bool = True   # 전체 파이프라인
+    db_alias:       str
+    eval_name:      str  = ""
+    items:          list       # [{question_id, question, SQL/gold_sql, evidence/hint, difficulty}, ...]
+    skip_baseline:  bool = False   # True = pgxllm 단독 평가 (빠른 측정)
 
 
 @app.post("/api/eval/run")
 async def eval_run(req: EvalRunRequest):
-    """BIRD 벤치마크 평가를 실행한다.
+    """BIRD 벤치마크 평가를 실행한다 (BIRDEvalRunner 사용).
 
-    items 형식: [{question_id: int, question: str, gold_sql: str}, ...]
-    baseline: LLM이 스키마만 보고 직접 생성한 SQL
-    pipeline: pgxllm 전체 파이프라인으로 생성한 SQL
-    EX(Execution Accuracy): 결과셋이 gold_sql 결과와 동일한지 비교
+    items 형식: BIRD 공식 JSON 그대로
+      [{question_id, question, SQL, evidence, difficulty, db_id, ...}, ...]
+    EX(Execution Accuracy): 결과셋이 gold_sql과 동일한지 순서 무관 비교.
     """
-    from pgxllm.config import LLMConfig
+    from pgxllm.eval.bird import BIRDEvalRunner, BIRDItem
+
     registry, config = get_registry()
     active_llm = get_active_llm_config()
     config = config.model_copy(update={"llm": active_llm})
 
-    results = []
+    # BIRD JSON → BIRDItem 변환 (공식 필드명 지원)
+    bird_items = []
+    for i, d in enumerate(req.items):
+        bird_items.append(BIRDItem(
+            question_id=str(d.get("question_id", i)),
+            question=d.get("question", ""),
+            db_id=d.get("db_id", req.db_alias),
+            gold_sql=d.get("SQL", d.get("gold_sql", d.get("sql", ""))),
+            hint=d.get("evidence", d.get("hint", "")),
+            difficulty=d.get("difficulty", "simple"),
+        ))
+    bird_items = [it for it in bird_items if it.question and it.gold_sql]
+
     eval_name = req.eval_name or f"eval_{int(_time_mod.time())}"
 
-    for item in req.items:
-        qid      = item.get("question_id")
-        question = item.get("question", "")
-        gold_sql = item.get("gold_sql", "")
+    runner  = BIRDEvalRunner(registry, config)
+    results = runner.run(
+        bird_items,
+        req.db_alias,
+        skip_baseline=req.skip_baseline,
+    )
+    summary = BIRDEvalRunner.summarize(results)
 
-        baseline_sql = pipeline_sql = None
-        baseline_ok  = pipeline_ok  = None
-        baseline_ex  = pipeline_ex  = None
-        err_base = err_pipe = None
-        t0 = _time_mod.monotonic()
-
-        # ── Gold 결과 실행 ──────────────────────────────────────
-        gold_rows = None
-        try:
-            mgr = registry.target(req.db_alias)
-            with mgr.connection() as conn:
-                gold_rows_raw, _ = conn.execute_limited(gold_sql.strip().rstrip(";"), limit=500)
-                gold_rows = [tuple(r.values()) for r in gold_rows_raw]
-        except Exception as e:
-            gold_rows = None
-
-        # ── Baseline: S1(Schema) + LLM 직접 생성 ───────────────
-        if req.run_baseline:
-            try:
-                from pgxllm.core.pipeline import PipelineRunner
-                from pgxllm.core.models import PipelineRequest
-                runner = PipelineRunner(registry, config)
-                # stage_mask: S1 only
-                pr = PipelineRequest(question=question, db_alias=req.db_alias)
-                res = runner.run_stage1_only(pr)
-                baseline_sql = res.final_sql
-                if baseline_sql:
-                    with mgr.connection() as conn:
-                        brows_raw, _ = conn.execute_limited(baseline_sql.strip().rstrip(";"), limit=500)
-                        brows = [tuple(r.values()) for r in brows_raw]
-                    baseline_ok = True
-                    baseline_ex = (gold_rows is not None) and (sorted(map(str, brows)) == sorted(map(str, gold_rows)))
-                else:
-                    baseline_ok = False
-            except Exception as e:
-                baseline_ok = False
-                err_base = str(e)
-
-        # ── Pipeline: 전체 S1~S4 ───────────────────────────────
-        if req.run_pipeline:
-            try:
-                from pgxllm.core.pipeline import PipelineRunner
-                from pgxllm.core.models import PipelineRequest
-                runner = PipelineRunner(registry, config)
-                pr = PipelineRequest(question=question, db_alias=req.db_alias)
-                res = runner.run(pr)
-                pipeline_sql = res.final_sql
-                if pipeline_sql and res.ok:
-                    with mgr.connection() as conn:
-                        prows_raw, _ = conn.execute_limited(pipeline_sql.strip().rstrip(";"), limit=500)
-                        prows = [tuple(r.values()) for r in prows_raw]
-                    pipeline_ok = True
-                    pipeline_ex = (gold_rows is not None) and (sorted(map(str, prows)) == sorted(map(str, gold_rows)))
-                else:
-                    pipeline_ok = res.ok
-                    err_pipe = res.error
-            except Exception as e:
-                pipeline_ok = False
-                err_pipe = str(e)
-
-        dur = int((_time_mod.monotonic() - t0) * 1000)
-
-        # ── eval_results 저장 ──────────────────────────────────
+    # DB 저장
+    for r in results:
         try:
             with registry.internal.connection() as conn:
                 conn.execute(
                     """
                     INSERT INTO eval_results
-                        (db_alias, eval_name, question_id, question, gold_sql,
-                         baseline_sql, pipeline_sql,
-                         baseline_ok, pipeline_ok, baseline_ex, pipeline_ex,
-                         error_baseline, error_pipeline, duration_ms)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        (db_alias, eval_name, question_id, question, hint, difficulty,
+                         gold_sql, baseline_sql, pgxllm_sql,
+                         ex_baseline, ex_pgxllm,
+                         error_baseline, error_pgxllm,
+                         baseline_ms, pgxllm_ms)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
-                    (req.db_alias, eval_name, qid, question, gold_sql,
-                     baseline_sql, pipeline_sql,
-                     baseline_ok, pipeline_ok, baseline_ex, pipeline_ex,
-                     err_base, err_pipe, dur)
+                    (req.db_alias, eval_name,
+                     r.question_id, r.question, r.hint, r.difficulty,
+                     r.gold_sql, r.baseline_sql, r.pgxllm_sql,
+                     r.ex_baseline, r.ex_pgxllm,
+                     r.baseline_error, r.pgxllm_error,
+                     r.baseline_ms, r.pgxllm_ms)
                 )
         except Exception as e:
             log.warning("[eval] save failed: %s", e)
 
-        results.append({
-            "question_id":   qid,
-            "question":      question,
-            "gold_sql":      gold_sql,
-            "baseline_sql":  baseline_sql,
-            "pipeline_sql":  pipeline_sql,
-            "baseline_ok":   baseline_ok,
-            "pipeline_ok":   pipeline_ok,
-            "baseline_ex":   baseline_ex,
-            "pipeline_ex":   pipeline_ex,
-            "error_baseline": err_base,
-            "error_pipeline": err_pipe,
-            "duration_ms":   dur,
-        })
-
-    total = len(results)
-    b_ex  = sum(1 for r in results if r["baseline_ex"]) if req.run_baseline else None
-    p_ex  = sum(1 for r in results if r["pipeline_ex"]) if req.run_pipeline else None
-
     return {
-        "eval_name":     eval_name,
-        "db_alias":      req.db_alias,
-        "total":         total,
-        "baseline_ex_count": b_ex,
-        "pipeline_ex_count": p_ex,
-        "baseline_ex_rate":  round(b_ex / total, 4) if (b_ex is not None and total) else None,
-        "pipeline_ex_rate":  round(p_ex / total, 4) if (p_ex is not None and total) else None,
-        "results":       results,
+        "eval_name":          eval_name,
+        "db_alias":           req.db_alias,
+        "total":              summary.total,
+        "baseline_ex_count":  summary.baseline_ex  if not req.skip_baseline else None,
+        "pgxllm_ex_count":    summary.pgxllm_ex,
+        "baseline_ex_rate":   round(summary.baseline_acc, 4) if not req.skip_baseline else None,
+        "pgxllm_ex_rate":     round(summary.pgxllm_acc,   4),
+        "by_difficulty":      summary.by_difficulty,
+        "results":            [r.to_dict() for r in results],
     }
 
 
@@ -1633,10 +1580,10 @@ def eval_list(db_alias: str = ""):
             rows = conn.execute(
                 f"""
                 SELECT db_alias, eval_name,
-                       COUNT(*)                                    AS total,
-                       SUM(CASE WHEN baseline_ex THEN 1 ELSE 0 END) AS baseline_ex,
-                       SUM(CASE WHEN pipeline_ex THEN 1 ELSE 0 END) AS pipeline_ex,
-                       MAX(created_at)                              AS last_run
+                       COUNT(*)                                      AS total,
+                       SUM(CASE WHEN ex_baseline THEN 1 ELSE 0 END) AS baseline_ex,
+                       SUM(CASE WHEN ex_pgxllm   THEN 1 ELSE 0 END) AS pgxllm_ex,
+                       MAX(created_at)                               AS last_run
                 FROM eval_results
                 {where}
                 GROUP BY db_alias, eval_name
@@ -1660,10 +1607,11 @@ def eval_results(db_alias: str, eval_name: str):
         with registry.internal.connection() as conn:
             rows = conn.execute(
                 """
-                SELECT id, question_id, question, gold_sql,
-                       baseline_sql, pipeline_sql,
-                       baseline_ok, pipeline_ok, baseline_ex, pipeline_ex,
-                       error_baseline, error_pipeline, duration_ms, created_at
+                SELECT id, question_id, question, hint, difficulty, gold_sql,
+                       baseline_sql, pgxllm_sql,
+                       ex_baseline, ex_pgxllm,
+                       error_baseline, error_pgxllm,
+                       baseline_ms, pgxllm_ms, created_at
                 FROM eval_results
                 WHERE db_alias=%s AND eval_name=%s
                 ORDER BY question_id
