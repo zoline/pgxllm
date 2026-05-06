@@ -1,0 +1,14 @@
+:root {
+  --navy:    #1E2761; --navy2:   #2E75B6;
+  --teal:    #028090; --teal2:   #00A896; --mint: #E0F5F5; --mint2: #F0FAFA;
+  --white:   #FFFFFF; --gray:  #64748B;   --gray2: #E2E8F0; --gray3: #F8F9FC;
+  --dark:    #1E293B; --green: #059669;   --green2: #D1FAE5;
+  --orange:  #D97706; --orange2: #FEF3C7; --red: #DC2626; --red2: #FEE2E2;
+  --purple:  #7C3AED; --purple2: #EDE9FE;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, Arial, sans-serif; font-size: 14px; background: var(--gray3); color: var(--dark); -webkit-font-smoothing: antialiased; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--gray2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gray); }

@@ -1,0 +1,99 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    // ── Setup ─────────────────────────────────────────────
+    {
+      "label": "setup: create venv",
+      "type": "shell",
+      "command": "python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+    // ── Test ──────────────────────────────────────────────
+    {
+      "label": "test: all",
+      "type": "shell",
+      "command": "python -m pytest tests/ -v --tb=short",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+      },
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "test: parser",
+      "type": "shell",
+      "command": "python -m pytest tests/parser/ -v",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+      },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "test: config",
+      "type": "shell",
+      "command": "python -m pytest tests/test_config.py -v",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+      },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "test: with coverage",
+      "type": "shell",
+      "command": "python -m pytest tests/ --cov=pgxllm --cov-report=html --cov-report=term-missing",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+      },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+    // ── Lint / Format ──────────────────────────────────────
+    {
+      "label": "lint: ruff check",
+      "type": "shell",
+      "command": "python -m ruff check src/ tests/",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "lint: ruff fix",
+      "type": "shell",
+      "command": "python -m ruff check --fix src/ tests/",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "format: ruff format",
+      "type": "shell",
+      "command": "python -m ruff format src/ tests/",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    // ── pgxllm CLI ─────────────────────────────────────────
+    {
+      "label": "pgxllm: db list",
+      "type": "shell",
+      "command": "python -m pgxllm.cli db list",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/src",
+          "PGXLLM_ROOT": "${workspaceFolder}"
+        }
+      },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+# pgxllm default configuration
+# Environment variables override YAML values
+
+# ── pgxllm Internal DB ────────────────────────────────────────
+# Stores metadata: graph, cache, rules, patterns, logs
+# Can be a completely separate PG instance from target DBs
+internal_db:
+  host:     ${PGXLLM_HOST:-localhost}
+  port:     ${PGXLLM_PORT:-5432}
+  user:     ${PGXLLM_USER:-postgres}
+  password: ${PGXLLM_PASSWORD:-}
+  dbname:   ${PGXLLM_DBNAME:-pgxllm}
+  schema:   pgxllm          # pgxllm objects live in this schema
+  pool_min: 1
+  pool_max: 5
+
+# ── Target DB Registry ────────────────────────────────────────
+# Individual target DBs are registered via CLI:
+#   pgxllm db register --alias mydb --host ... --dbname ...
+# The entries below are loaded at startup as defaults.
+# Each entry can be overridden per-environment via env vars.
+target_dbs: []
+# Example:
+# target_dbs:
+#   - alias:    mydb
+#     host:     ${MYDB_HOST:-localhost}
+#     port:     ${MYDB_PORT:-5432}
+#     user:     ${MYDB_USER:-postgres}
+#     password: ${MYDB_PASSWORD:-}
+#     dbname:   mydb
+#     # Schema mode: 'include' = only listed schemas
+#     #              'exclude' = all except listed
+#     schema_mode: include          # include | exclude
+#     schemas:
+#       - public
+#       - sales
+#       - hr
+#     # OR use exclude mode:
+#     # schema_mode: exclude
+#     # schemas:
+#     #   - pg_catalog
+#     #   - information_schema
+#     #   - pg_toast
+#     pool_min: 1
+#     pool_max: 3
+#
+#   - alias:    warehouse
+#     host:     host-b
+#     port:     5432
+#     user:     ${WH_USER:-postgres}
+#     password: ${WH_PASSWORD:-}
+#     dbname:   warehouse
+#     schema_mode: include
+#     schemas:
+#       - dw
+#       - staging
+
+# ── Cross-DB Relations ────────────────────────────────────────
+# Allow relations between tables in different target DBs
+# e.g. orders(mydb.public) → customers(warehouse.dw)
+cross_db_relations:
+  enabled: true
+
+# ── LLM ──────────────────────────────────────────────────────
+llm:
+  provider:    ollama          # ollama | vllm | anthropic | openai
+  base_url:    http://localhost:11434
+  model:       qwen2.5-coder:7b
+  timeout:     600
+  max_tokens:  2048
+  temperature: 0.0
+
+# ── Cache ─────────────────────────────────────────────────────
+cache:
+  backend: tfidf              # tfidf | embedding
+  tfidf:
+    db_path:              databases/pgxllm_cache.sqlite
+    top_k:                5
+    similarity_threshold: 0.75
+  embedding:
+    top_k:                5
+    similarity_threshold: 0.85
+
+# ── Graph ─────────────────────────────────────────────────────
+graph:
+  backend:              postgresql   # postgresql | age | neo4j
+  max_depth:            4
+  precompute_on_refresh: true
+  postgresql: {}
+  age:
+    graph_name: pgxllm_graph
+  neo4j:
+    uri:      bolt://localhost:7687
+    user:     neo4j
+    password: ${NEO4J_PASSWORD:-}
+
+# ── Parser ────────────────────────────────────────────────────
+parser:
+  max_depth: 5
+
+# ── Sample Data ───────────────────────────────────────────────
+sample_data:
+  thresholds:
+    code_distinct_max:  50
+    dimension_fk_min:   2
+    dimension_row_max:  1_000_000
+    sample_limit:       20
+  # Default blacklist patterns (applied to all target DBs)
+  blacklist:
+    tables:   []
+    columns:  []
+    patterns:
+      - "*_hash"
+      - "*_token"
+      - "*_password"
+      - "*_secret"
+      - "*_key"
+
+# ── Pipeline ──────────────────────────────────────────────────
+pipeline:
+  validation:
+    max_correction_loops: 3
+    correction_timeout:   30
+  few_shot:
+    top_k: 3

@@ -1,0 +1,30 @@
+{
+  "recommendations": [
+    // ── Python ──────────────────────────────────────────
+    "ms-python.python",
+    "ms-python.pylance",
+    "ms-python.debugpy",
+    "charliermarsh.ruff",         // Linter + formatter
+
+    // ── ANTLR4 ──────────────────────────────────────────
+    "mike-lischke.vscode-antlr4", // g4 syntax highlight + diagrams
+
+    // ── DB / SQL ─────────────────────────────────────────
+    "cweijan.vscode-postgresql-client2",  // PostgreSQL client
+
+    // ── YAML / TOML ──────────────────────────────────────
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+
+    // ── Git ───────────────────────────────────────────────
+    "eamodio.gitlens",
+
+    // ── AI coding assistant (Continue.dev) ───────────────
+    "continue.continue",
+
+    // ── General utilities ─────────────────────────────────
+    "streetsidesoftware.code-spell-checker",
+    "usernamehw.errorlens",        // inline error display
+    "gruntfuggly.todo-tree"        // TODO/FIXME tracker
+  ]
+}

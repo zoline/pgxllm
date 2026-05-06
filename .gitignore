@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# pgxllm runtime
+databases/*.sqlite
+databases/*.db
+logs/
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Config overrides (keep default.yaml in git)
+configs/local.yaml
+configs/prod.yaml
+
+# ANTLR generated (regenerate with: pgxllm generate-parser)
+src/pgxllm/parser/generated/*.py
+!src/pgxllm/parser/generated/__init__.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend build & deps
+frontend/node_modules/
+frontend/dist/
+
+# Temp / nohup
+nohup.out
+/tmp/

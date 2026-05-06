@@ -1,0 +1,84 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // ── Pytest: full test suite ──────────────────────────
+    {
+      "name": "pytest: all tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests", "-v", "--tb=short"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    // ── Pytest: parser tests only ────────────────────────
+    {
+      "name": "pytest: parser",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/parser/", "-v"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    // ── Pytest: config tests only ────────────────────────
+    {
+      "name": "pytest: config",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_config.py", "-v"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    // ── Current test file ────────────────────────────────
+    {
+      "name": "pytest: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    // ── pgxllm CLI ───────────────────────────────────────
+    {
+      "name": "pgxllm: CLI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pgxllm.cli",
+      "args": [],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PGXLLM_ROOT": "${workspaceFolder}"
+      }
+    },
+    // ── Python: current file ─────────────────────────────
+    {
+      "name": "Python: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PGXLLM_ROOT": "${workspaceFolder}"
+      }
+    }
+  ]
+}
