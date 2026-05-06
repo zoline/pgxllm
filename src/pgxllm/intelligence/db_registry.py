@@ -31,6 +31,7 @@ class DBStatus:
     host:                str
     port:                int
     dbname:              str
+    db_type:             str
     schema_mode:         str
     schemas:             list
     schema_version_hash: Optional[str]
@@ -57,6 +58,7 @@ class DBRegistryService:
                 "alias": cfg.alias, "host": cfg.host, "port": cfg.port,
                 "db_user": cfg.user, "db_password": cfg.password,
                 "dbname": cfg.dbname,
+                "db_type": cfg.db_type,
                 "schema_mode": cfg.schema_mode,
                 "schemas":            json.dumps(cfg.schemas),
                 "blacklist_tables":   json.dumps(cfg.blacklist_tables),
@@ -69,7 +71,8 @@ class DBRegistryService:
                     UPDATE db_registry SET
                         host=%(host)s, port=%(port)s, db_user=%(db_user)s,
                         db_password=%(db_password)s,
-                        dbname=%(dbname)s, schema_mode=%(schema_mode)s,
+                        dbname=%(dbname)s, db_type=%(db_type)s,
+                        schema_mode=%(schema_mode)s,
                         schemas=%(schemas)s::jsonb,
                         blacklist_tables=%(blacklist_tables)s::jsonb,
                         blacklist_columns=%(blacklist_columns)s::jsonb,
@@ -80,11 +83,11 @@ class DBRegistryService:
             else:
                 conn.execute("""
                     INSERT INTO db_registry
-                        (alias,host,port,db_user,db_password,dbname,schema_mode,
+                        (alias,host,port,db_user,db_password,dbname,db_type,schema_mode,
                          schemas,blacklist_tables,blacklist_columns,blacklist_patterns,is_active)
                     VALUES
                         (%(alias)s,%(host)s,%(port)s,%(db_user)s,%(db_password)s,
-                         %(dbname)s,%(schema_mode)s,
+                         %(dbname)s,%(db_type)s,%(schema_mode)s,
                          %(schemas)s::jsonb,%(blacklist_tables)s::jsonb,
                          %(blacklist_columns)s::jsonb,%(blacklist_patterns)s::jsonb,%(is_active)s)
                 """, row)
@@ -108,7 +111,9 @@ class DBRegistryService:
                 pass
             result.append(DBStatus(
                 alias=row["alias"], host=row["host"], port=row["port"],
-                dbname=row["dbname"], schema_mode=row["schema_mode"],
+                dbname=row["dbname"],
+                db_type=row.get("db_type", "production") or "production",
+                schema_mode=row["schema_mode"],
                 schemas=_as_list(row["schemas"]),
                 schema_version_hash=row["schema_version_hash"],
                 last_refresh_at=row["last_refresh_at"],
@@ -131,6 +136,7 @@ class DBRegistryService:
             alias=row["alias"], host=row["host"], port=row["port"],
             user=row["db_user"], password=row.get("db_password", ""),
             dbname=row["dbname"],
+            db_type=row.get("db_type", "production") or "production",
             schema_mode=row["schema_mode"],
             schemas=_as_list(row["schemas"]),
             blacklist_tables=_as_list(row["blacklist_tables"]),
@@ -237,6 +243,7 @@ class DBRegistryService:
                     alias=row["alias"], host=row["host"], port=row["port"],
                     user=row["db_user"], password=row.get("db_password", ""),
                     dbname=row["dbname"],
+                    db_type=row.get("db_type", "production") or "production",
                     schema_mode=row["schema_mode"],
                     schemas=_as_list(row["schemas"]),
                     blacklist_tables=_as_list(row["blacklist_tables"]),

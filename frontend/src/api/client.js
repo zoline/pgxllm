@@ -77,3 +77,11 @@ export const llmApi = {
   saveConfig: (data)  => api.post('/llm/config', data).then(r => r.data),
   test:  (data)       => api.post('/llm/test',   data).then(r => r.data),
 }
+
+export const evalApi = {
+  run:     (data)                   => apiLlm.post('/eval/run', data).then(r => r.data),
+  list:    (dbAlias='')             => api.get('/eval/list', { params: dbAlias ? { db_alias: dbAlias } : {} }).then(r => r.data),
+  results: (dbAlias, evalName)      => api.get('/eval/results', { params: { db_alias: dbAlias, eval_name: evalName } }).then(r => r.data),
+  delete:  (dbAlias, evalName)      => api.delete('/eval/results', { params: { db_alias: dbAlias, eval_name: evalName } }).then(r => r.data),
+  promoteRule: (alias, ruleId, data) => api.post(`/rules/${alias}/${ruleId}/promote`, data).then(r => r.data),
+}

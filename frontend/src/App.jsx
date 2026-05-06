@@ -5,6 +5,7 @@ import SchemaPage from './pages/SchemaPage'
 import { GraphPage, RulesPage, PgStatAnalyzePage, PgStatTunePage } from './pages/GraphRulesPages'
 import DbsPage from './pages/DbsPage'
 import LLMSettingsPage from './pages/LLMSettingsPage'
+import EvalPage from './pages/EvalPage'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="pgstat/analyze" element={<PgStatAnalyzePage />} />
           <Route path="pgstat/tune"    element={<PgStatTunePage />} />
           <Route path="rules"          element={<RulesPage />} />
+          <Route path="eval"           element={<EvalPage />} />
           <Route path="dbs"            element={<DbsPage />} />
           <Route path="llm"            element={<LLMSettingsPage />} />
         </Route>

@@ -34,6 +34,7 @@ const navLinks = [
   { to: '/pgstat/analyze',  icon: '📋',  label: 'Query 분석',    indent: true },
   { to: '/pgstat/tune',     icon: '🔧',  label: 'Query 튜닝',    indent: true },
   { to: '/rules',           icon: '📐',  label: 'Dialect Rules', section: 'Rules' },
+  { to: '/eval',            icon: '🧪',  label: 'Eval (BIRD)',   section: 'Benchmark' },
   { to: '/dbs',             icon: '🗄',  label: 'DB 관리',        section: 'Admin' },
   { to: '/llm',             icon: '🤖',  label: 'LLM 설정' },
 ]
@@ -71,6 +72,7 @@ export default function Layout() {
     '/pgstat/analyze': 'Query 분석',
     '/pgstat/tune':    'Query 튜닝',
     '/rules':          'Dialect Rules',
+    '/eval':           'Eval (BIRD 벤치마크)',
     '/dbs':            'DB 관리',
     '/llm':            'LLM 설정',
   }[location.pathname] || 'pgxllm'

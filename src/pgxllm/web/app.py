@@ -37,6 +37,41 @@ app.add_middleware(
 _registry = None
 _config   = None
 
+
+def _run_migrations(registry) -> None:
+    """Apply incremental DDL migrations to existing internal DB."""
+    stmts = [
+        "ALTER TABLE db_registry ADD COLUMN IF NOT EXISTS db_type TEXT NOT NULL DEFAULT 'production'",
+        "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS is_benchmark BOOLEAN NOT NULL DEFAULT FALSE",
+        """CREATE TABLE IF NOT EXISTS eval_results (
+            id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            db_alias        TEXT        NOT NULL,
+            eval_name       TEXT        NOT NULL DEFAULT '',
+            question_id     INTEGER,
+            question        TEXT        NOT NULL,
+            gold_sql        TEXT        NOT NULL,
+            baseline_sql    TEXT,
+            pipeline_sql    TEXT,
+            baseline_ok     BOOLEAN,
+            pipeline_ok     BOOLEAN,
+            baseline_ex     BOOLEAN,
+            pipeline_ex     BOOLEAN,
+            error_baseline  TEXT,
+            error_pipeline  TEXT,
+            duration_ms     INTEGER,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_eval_results_db ON eval_results(db_alias, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_eval_results_name ON eval_results(db_alias, eval_name)",
+    ]
+    for sql in stmts:
+        try:
+            with registry.internal.connection() as conn:
+                conn.execute(sql)
+        except Exception:
+            pass
+
+
 def get_registry():
     global _registry, _config
     if _registry is None:
@@ -57,6 +92,8 @@ def get_registry():
 
         _config   = load_config()
         _registry = ConnectionRegistry(_config)
+        # incremental migrations for existing deployments
+        _run_migrations(_registry)
         DBRegistryService(_registry).load_registered_to_config(_config)
     return _registry, _config
 
@@ -79,6 +116,7 @@ def db_list():
                 "host":        s.host,
                 "port":        s.port,
                 "dbname":      s.dbname,
+                "db_type":     s.db_type,
                 "schema_mode": s.schema_mode,
                 "schemas":     s.schemas,
                 "is_active":   s.is_active,
@@ -100,6 +138,7 @@ class RegisterRequest(BaseModel):
     user:        str = "postgres"
     password:    str = ""
     dbname:      Optional[str] = None
+    db_type:     str = "production"   # production | benchmark
     schema_mode: str = "exclude"
     schemas:     list[str] = ["pg_catalog", "information_schema", "pg_toast"]
 
@@ -113,6 +152,7 @@ def db_register(req: RegisterRequest):
         alias=req.alias, host=req.host, port=req.port,
         user=req.user, password=req.password,
         dbname=req.dbname or req.alias,
+        db_type=req.db_type,
         schema_mode=req.schema_mode, schemas=req.schemas,
     )
     try:
@@ -273,27 +313,43 @@ def _ensure_history_table(registry) -> None:
     with registry.internal.connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS query_history (
-                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                db_alias    TEXT        NOT NULL,
-                mode        TEXT        NOT NULL DEFAULT 'pipeline',
-                input_text  TEXT        NOT NULL,
-                ok          BOOLEAN     NOT NULL DEFAULT TRUE,
-                error       TEXT,
-                duration_ms INTEGER,
-                executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                db_alias        TEXT        NOT NULL,
+                mode            TEXT        NOT NULL DEFAULT 'pipeline',
+                input_text      TEXT        NOT NULL,
+                ok              BOOLEAN     NOT NULL DEFAULT TRUE,
+                error           TEXT,
+                duration_ms     INTEGER,
+                is_benchmark    BOOLEAN     NOT NULL DEFAULT FALSE,
+                executed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_query_history_db "
             "ON query_history(db_alias, executed_at DESC)"
         )
+        conn.execute(
+            "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS is_benchmark BOOLEAN NOT NULL DEFAULT FALSE"
+        )
 
 
 _history_table_ready = False  # 프로세스 당 한 번만 CREATE 실행
 
 
+def _is_benchmark_db(registry, db_alias: str) -> bool:
+    """db_registry에서 db_type이 benchmark인지 확인."""
+    try:
+        with registry.internal.connection() as conn:
+            row = conn.execute_one(
+                "SELECT db_type FROM db_registry WHERE alias=%s", [db_alias]
+            )
+        return (row or {}).get("db_type") == "benchmark"
+    except Exception:
+        return False
+
+
 def _save_history(registry, db_alias: str, mode: str, input_text: str,
-                  ok: bool, error, duration_ms) -> None:
+                  ok: bool, error, duration_ms, is_benchmark: bool = False) -> None:
     global _history_table_ready
     try:
         if not _history_table_ready:
@@ -302,10 +358,10 @@ def _save_history(registry, db_alias: str, mode: str, input_text: str,
         with registry.internal.connection() as conn:
             conn.execute(
                 """
-                INSERT INTO query_history (db_alias, mode, input_text, ok, error, duration_ms)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO query_history (db_alias, mode, input_text, ok, error, duration_ms, is_benchmark)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (db_alias, mode, input_text, ok, error, duration_ms)
+                (db_alias, mode, input_text, ok, error, duration_ms, is_benchmark)
             )
     except Exception as e:
         log.warning("[history] save failed: %s", e)
@@ -322,7 +378,8 @@ def _run_pipeline(db_alias: str, question: str, *, debug: bool = False) -> dict:
         runner = PipelineRunner(registry, config)
         result = runner.run(PipelineRequest(question=question, db_alias=db_alias))
         _save_history(registry, db_alias, "pipeline", question,
-                      result.ok, result.error, result.duration_ms)
+                      result.ok, result.error, result.duration_ms,
+                      is_benchmark=_is_benchmark_db(registry, db_alias))
         resp = {
             "mode":        "pipeline",
             "ok":          result.ok,
@@ -462,7 +519,8 @@ def _run_direct_sql(alias: str, sql: str, limit: int) -> dict:
         with mgr.connection() as conn:
             rows, truncated = conn.execute_limited(sql, limit=limit)
         dur = int((_time.monotonic() - t0) * 1000)
-        _save_history(registry, alias, "direct", sql, True, None, dur)
+        _save_history(registry, alias, "direct", sql, True, None, dur,
+                      is_benchmark=_is_benchmark_db(registry, alias))
         if not rows:
             return {"columns": [], "rows": [], "count": 0, "truncated": False}
         columns = list(rows[0].keys())
@@ -1266,6 +1324,7 @@ def graph_update_edge(alias: str, edge_id: str, req: EdgeUpdateRequest):
 def rules_list(alias: str):
     try:
         registry, _ = get_registry()
+        is_bm = _is_benchmark_db(registry, alias)
         with registry.internal.connection() as conn:
             rows = conn.execute(
                 """
@@ -1277,9 +1336,10 @@ def rules_list(alias: str):
                 WHERE db_alias = %s
                    OR scope IN ('global', 'dialect')
                    OR (scope IN ('table', 'column') AND db_alias IS NULL)
+                   OR (scope = 'benchmark' AND (%s OR db_alias = %s))
                 ORDER BY auto_detected DESC, scope, rule_id
                 """,
-                [alias]
+                [alias, is_bm, alias]
             )
         return [dict(r) for r in rows]
     except Exception as e:
@@ -1365,6 +1425,35 @@ def rules_delete(alias: str, rule_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class PromoteRuleRequest(BaseModel):
+    target_scope: str = "global"   # global | db
+    target_db_alias: Optional[str] = None
+
+
+@app.post("/api/rules/{alias}/{rule_id}/promote")
+def rules_promote(alias: str, rule_id: str, req: PromoteRuleRequest):
+    """benchmark 스코프 룰을 production scope(global/db)로 승격한다."""
+    try:
+        registry, _ = get_registry()
+        if req.target_scope not in ("global", "db"):
+            raise HTTPException(status_code=400, detail="target_scope must be 'global' or 'db'")
+        new_db_alias = None if req.target_scope == "global" else (req.target_db_alias or alias)
+        with registry.internal.connection() as conn:
+            conn.execute(
+                """
+                UPDATE dialect_rules
+                SET scope=%s, db_alias=%s, updated_at=NOW()
+                WHERE rule_id=%s AND scope='benchmark'
+                """,
+                [req.target_scope, new_db_alias, rule_id]
+            )
+        return {"ok": True, "rule_id": rule_id, "new_scope": req.target_scope}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ══════════════════════════════════════════════════════════════
 # API — /api/patterns
 # ══════════════════════════════════════════════════════════════
@@ -1378,6 +1467,229 @@ def patterns_list():
                 "SELECT * FROM sql_patterns ORDER BY hit_count DESC"
             )
         return [dict(r) for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════
+# API — /api/eval  (BIRD Benchmark 평가)
+# ══════════════════════════════════════════════════════════════
+
+import json as _json
+import time as _time_mod
+
+
+class EvalRunRequest(BaseModel):
+    db_alias:   str
+    eval_name:  str = ""
+    items:      list   # [{question_id, question, gold_sql}, ...]
+    run_baseline: bool = True   # LLM 직접 생성 (S1 only)
+    run_pipeline: bool = True   # 전체 파이프라인
+
+
+@app.post("/api/eval/run")
+async def eval_run(req: EvalRunRequest):
+    """BIRD 벤치마크 평가를 실행한다.
+
+    items 형식: [{question_id: int, question: str, gold_sql: str}, ...]
+    baseline: LLM이 스키마만 보고 직접 생성한 SQL
+    pipeline: pgxllm 전체 파이프라인으로 생성한 SQL
+    EX(Execution Accuracy): 결과셋이 gold_sql 결과와 동일한지 비교
+    """
+    from pgxllm.config import LLMConfig
+    registry, config = get_registry()
+    active_llm = get_active_llm_config()
+    config = config.model_copy(update={"llm": active_llm})
+
+    results = []
+    eval_name = req.eval_name or f"eval_{int(_time_mod.time())}"
+
+    for item in req.items:
+        qid      = item.get("question_id")
+        question = item.get("question", "")
+        gold_sql = item.get("gold_sql", "")
+
+        baseline_sql = pipeline_sql = None
+        baseline_ok  = pipeline_ok  = None
+        baseline_ex  = pipeline_ex  = None
+        err_base = err_pipe = None
+        t0 = _time_mod.monotonic()
+
+        # ── Gold 결과 실행 ──────────────────────────────────────
+        gold_rows = None
+        try:
+            mgr = registry.target(req.db_alias)
+            with mgr.connection() as conn:
+                gold_rows_raw, _ = conn.execute_limited(gold_sql.strip().rstrip(";"), limit=500)
+                gold_rows = [tuple(r.values()) for r in gold_rows_raw]
+        except Exception as e:
+            gold_rows = None
+
+        # ── Baseline: S1(Schema) + LLM 직접 생성 ───────────────
+        if req.run_baseline:
+            try:
+                from pgxllm.core.pipeline import PipelineRunner
+                from pgxllm.core.models import PipelineRequest
+                runner = PipelineRunner(registry, config)
+                # stage_mask: S1 only
+                pr = PipelineRequest(question=question, db_alias=req.db_alias)
+                res = runner.run_stage1_only(pr)
+                baseline_sql = res.final_sql
+                if baseline_sql:
+                    with mgr.connection() as conn:
+                        brows_raw, _ = conn.execute_limited(baseline_sql.strip().rstrip(";"), limit=500)
+                        brows = [tuple(r.values()) for r in brows_raw]
+                    baseline_ok = True
+                    baseline_ex = (gold_rows is not None) and (sorted(map(str, brows)) == sorted(map(str, gold_rows)))
+                else:
+                    baseline_ok = False
+            except Exception as e:
+                baseline_ok = False
+                err_base = str(e)
+
+        # ── Pipeline: 전체 S1~S4 ───────────────────────────────
+        if req.run_pipeline:
+            try:
+                from pgxllm.core.pipeline import PipelineRunner
+                from pgxllm.core.models import PipelineRequest
+                runner = PipelineRunner(registry, config)
+                pr = PipelineRequest(question=question, db_alias=req.db_alias)
+                res = runner.run(pr)
+                pipeline_sql = res.final_sql
+                if pipeline_sql and res.ok:
+                    with mgr.connection() as conn:
+                        prows_raw, _ = conn.execute_limited(pipeline_sql.strip().rstrip(";"), limit=500)
+                        prows = [tuple(r.values()) for r in prows_raw]
+                    pipeline_ok = True
+                    pipeline_ex = (gold_rows is not None) and (sorted(map(str, prows)) == sorted(map(str, gold_rows)))
+                else:
+                    pipeline_ok = res.ok
+                    err_pipe = res.error
+            except Exception as e:
+                pipeline_ok = False
+                err_pipe = str(e)
+
+        dur = int((_time_mod.monotonic() - t0) * 1000)
+
+        # ── eval_results 저장 ──────────────────────────────────
+        try:
+            with registry.internal.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO eval_results
+                        (db_alias, eval_name, question_id, question, gold_sql,
+                         baseline_sql, pipeline_sql,
+                         baseline_ok, pipeline_ok, baseline_ex, pipeline_ex,
+                         error_baseline, error_pipeline, duration_ms)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (req.db_alias, eval_name, qid, question, gold_sql,
+                     baseline_sql, pipeline_sql,
+                     baseline_ok, pipeline_ok, baseline_ex, pipeline_ex,
+                     err_base, err_pipe, dur)
+                )
+        except Exception as e:
+            log.warning("[eval] save failed: %s", e)
+
+        results.append({
+            "question_id":   qid,
+            "question":      question,
+            "gold_sql":      gold_sql,
+            "baseline_sql":  baseline_sql,
+            "pipeline_sql":  pipeline_sql,
+            "baseline_ok":   baseline_ok,
+            "pipeline_ok":   pipeline_ok,
+            "baseline_ex":   baseline_ex,
+            "pipeline_ex":   pipeline_ex,
+            "error_baseline": err_base,
+            "error_pipeline": err_pipe,
+            "duration_ms":   dur,
+        })
+
+    total = len(results)
+    b_ex  = sum(1 for r in results if r["baseline_ex"]) if req.run_baseline else None
+    p_ex  = sum(1 for r in results if r["pipeline_ex"]) if req.run_pipeline else None
+
+    return {
+        "eval_name":     eval_name,
+        "db_alias":      req.db_alias,
+        "total":         total,
+        "baseline_ex_count": b_ex,
+        "pipeline_ex_count": p_ex,
+        "baseline_ex_rate":  round(b_ex / total, 4) if (b_ex is not None and total) else None,
+        "pipeline_ex_rate":  round(p_ex / total, 4) if (p_ex is not None and total) else None,
+        "results":       results,
+    }
+
+
+@app.get("/api/eval/list")
+def eval_list(db_alias: str = ""):
+    """eval_results 요약 목록 (eval_name 별 집계)."""
+    try:
+        registry, _ = get_registry()
+        where = "WHERE db_alias=%s" if db_alias else ""
+        params = [db_alias] if db_alias else []
+        with registry.internal.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT db_alias, eval_name,
+                       COUNT(*)                                    AS total,
+                       SUM(CASE WHEN baseline_ex THEN 1 ELSE 0 END) AS baseline_ex,
+                       SUM(CASE WHEN pipeline_ex THEN 1 ELSE 0 END) AS pipeline_ex,
+                       MAX(created_at)                              AS last_run
+                FROM eval_results
+                {where}
+                GROUP BY db_alias, eval_name
+                ORDER BY MAX(created_at) DESC
+                """,
+                params
+            )
+        return [
+            {**dict(r), "last_run": r["last_run"].isoformat() if r.get("last_run") else None}
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/eval/results")
+def eval_results(db_alias: str, eval_name: str):
+    """eval_name에 해당하는 상세 결과 목록."""
+    try:
+        registry, _ = get_registry()
+        with registry.internal.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, question_id, question, gold_sql,
+                       baseline_sql, pipeline_sql,
+                       baseline_ok, pipeline_ok, baseline_ex, pipeline_ex,
+                       error_baseline, error_pipeline, duration_ms, created_at
+                FROM eval_results
+                WHERE db_alias=%s AND eval_name=%s
+                ORDER BY question_id
+                """,
+                [db_alias, eval_name]
+            )
+        return [
+            {**dict(r), "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+             "id": str(r["id"])}
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/eval/results")
+def eval_results_delete(db_alias: str, eval_name: str):
+    """eval_name 결과 전체 삭제."""
+    try:
+        registry, _ = get_registry()
+        with registry.internal.connection() as conn:
+            rows = conn.execute(
+                "DELETE FROM eval_results WHERE db_alias=%s AND eval_name=%s RETURNING id",
+                [db_alias, eval_name]
+            )
+        return {"deleted": len(rows) if rows else 0}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

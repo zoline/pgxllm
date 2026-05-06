@@ -102,9 +102,14 @@ class TargetDBConfig(DBConn):
     Schema resolution:
       schema_mode = "include"  → only scan listed schemas
       schema_mode = "exclude"  → scan all schemas EXCEPT listed
+
+    db_type:
+      production  → 실운영 DB (기본값)
+      benchmark   → 벤치마크 전용 DB (BIRD 등 평가용)
     """
     alias:       str                         # unique name, e.g. "mydb"
     dbname:      str   = ""
+    db_type:     Literal["production", "benchmark"] = "production"
     schema_mode: Literal["include", "exclude"] = "exclude"
     schemas:     list[str] = Field(
         default_factory=lambda: ["pg_catalog", "information_schema", "pg_toast"]

@@ -237,6 +237,46 @@ class PipelineRunner:
         log.info("[Pipeline] %s", result.summary())
         return result
 
+    def run_stage1_only(self, request: PipelineRequest) -> PipelineResult:
+        """Baseline: S1(이해) + S2(스키마) + S3(생성) 단 1회, 캐시/검증 없음.
+
+        벤치마크 베이스라인 측정용 — 파이프라인 고도화 효과를 비교한다.
+        """
+        t_start = time.perf_counter()
+        result  = PipelineResult(request=request)
+
+        def elapsed_ms() -> int:
+            return int((time.perf_counter() - t_start) * 1000)
+
+        # S1
+        try:
+            analysis = self._s1.run(request.question, request.db_alias, top_k_tables=10)
+        except Exception as e:
+            result.error = f"S1 failed: {e}"
+            result.duration_ms = elapsed_ms()
+            return result
+
+        # S2
+        try:
+            schema = self._s2.run(analysis, request.db_alias)
+        except Exception as e:
+            result.error = f"S2 failed: {e}"
+            result.duration_ms = elapsed_ms()
+            return result
+
+        # S3 (1 attempt, no validation)
+        self._ensure_llm()
+        try:
+            candidate = self._s3.run(request.question, analysis, schema, attempt=1)
+            result.final_sql   = candidate.sql
+            result.explanation = candidate.explanation
+            result.ok = bool(candidate.sql)
+        except Exception as e:
+            result.error = f"S3 failed: {e}"
+
+        result.duration_ms = elapsed_ms()
+        return result
+
     def _save_verified(self, request: PipelineRequest, sql: str, key: str = "") -> None:
         """실행 성공한 SQL을 verified_queries 에 저장.
         key: 정규화된 캐시 키 (cache.set()과 동일한 값으로 저장해 삭제 일관성 유지).

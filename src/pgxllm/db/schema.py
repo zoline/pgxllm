@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS db_registry (
     db_user             TEXT        NOT NULL,
     db_password         TEXT        NOT NULL DEFAULT '',
     dbname              TEXT        NOT NULL,
+    db_type             TEXT        NOT NULL DEFAULT 'production',
+    -- production | benchmark
     schema_mode         TEXT        NOT NULL DEFAULT 'exclude',
     schemas             JSONB       NOT NULL DEFAULT '[]',
     blacklist_tables    JSONB       NOT NULL DEFAULT '[]',
@@ -142,7 +144,7 @@ CREATE TABLE IF NOT EXISTS dialect_rules (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     rule_id         TEXT        NOT NULL UNIQUE,
     scope           TEXT        NOT NULL DEFAULT 'global',
-    -- global | dialect | db | table | column
+    -- global | dialect | db | table | column | benchmark
     dialect         TEXT        NOT NULL DEFAULT 'postgresql',
     db_alias        TEXT,               -- NULL = applies to all DBs
     schema_name     TEXT,
@@ -169,7 +171,7 @@ CREATE TABLE IF NOT EXISTS sql_patterns (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     name              TEXT        NOT NULL UNIQUE,
     description       TEXT,
-    scope             TEXT        NOT NULL DEFAULT 'global',
+    scope             TEXT        NOT NULL DEFAULT 'global',  -- global | db | benchmark
     dialect           TEXT        NOT NULL DEFAULT 'postgresql',
     db_alias          TEXT,
     detect_keywords   JSONB       NOT NULL DEFAULT '[]',
@@ -239,16 +241,44 @@ CREATE TABLE IF NOT EXISTS pipeline_logs (
 # ── Query history ────────────────────────────────────────────────
 _QUERY_HISTORY = """
 CREATE TABLE IF NOT EXISTS query_history (
-    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    db_alias    TEXT        NOT NULL,
-    mode        TEXT        NOT NULL DEFAULT 'pipeline',  -- pipeline | direct
-    input_text  TEXT        NOT NULL,    -- 사용자 입력 텍스트 (질문 또는 SQL)
-    ok          BOOLEAN     NOT NULL DEFAULT TRUE,
-    error       TEXT,
-    duration_ms INTEGER,
-    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    db_alias        TEXT        NOT NULL,
+    mode            TEXT        NOT NULL DEFAULT 'pipeline',  -- pipeline | direct
+    input_text      TEXT        NOT NULL,
+    ok              BOOLEAN     NOT NULL DEFAULT TRUE,
+    error           TEXT,
+    duration_ms     INTEGER,
+    is_benchmark    BOOLEAN     NOT NULL DEFAULT FALSE,
+    executed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """
+
+# ── BIRD eval results ─────────────────────────────────────────
+_EVAL_RESULTS = """
+CREATE TABLE IF NOT EXISTS eval_results (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    db_alias        TEXT        NOT NULL,
+    eval_name       TEXT        NOT NULL DEFAULT '',
+    question_id     INTEGER,
+    question        TEXT        NOT NULL,
+    gold_sql        TEXT        NOT NULL,
+    baseline_sql    TEXT,
+    pipeline_sql    TEXT,
+    baseline_ok     BOOLEAN,    -- execution success
+    pipeline_ok     BOOLEAN,
+    baseline_ex     BOOLEAN,    -- exact-match (EX) vs gold
+    pipeline_ex     BOOLEAN,
+    error_baseline  TEXT,
+    error_pipeline  TEXT,
+    duration_ms     INTEGER,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+"""
+
+_EVAL_RESULTS_IDX = [
+    "CREATE INDEX IF NOT EXISTS idx_eval_results_db ON eval_results(db_alias, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_results_name ON eval_results(db_alias, eval_name)",
+]
 
 _QUERY_HISTORY_IDX = [
     "CREATE INDEX IF NOT EXISTS idx_query_history_db ON query_history(db_alias, executed_at DESC)",
@@ -297,6 +327,7 @@ INTERNAL_SCHEMA_SQL: list[str] = (
         _VERIFIED_QUERIES,
         _PIPELINE_LOGS,
         _QUERY_HISTORY,
+        _EVAL_RESULTS,
         _SCHEMA_EMBEDDINGS,
         _QUESTION_EMBEDDINGS,
     ]
@@ -305,6 +336,7 @@ INTERNAL_SCHEMA_SQL: list[str] = (
     + _GRAPH_PATHS_IDX
     + _VERIFIED_QUERIES_IDX
     + _QUERY_HISTORY_IDX
+    + _EVAL_RESULTS_IDX
 )
 
 # ── incremental schema migrations ────────────────────────────
@@ -321,6 +353,28 @@ SCHEMA_ALTER_SQL: list[str] = [
         executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )""",
     "CREATE INDEX IF NOT EXISTS idx_query_history_db ON pgxllm.query_history(db_alias, executed_at DESC)",
+    "ALTER TABLE pgxllm.db_registry ADD COLUMN IF NOT EXISTS db_type TEXT NOT NULL DEFAULT 'production'",
+    "ALTER TABLE pgxllm.query_history ADD COLUMN IF NOT EXISTS is_benchmark BOOLEAN NOT NULL DEFAULT FALSE",
+    """CREATE TABLE IF NOT EXISTS pgxllm.eval_results (
+        id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        db_alias        TEXT        NOT NULL,
+        eval_name       TEXT        NOT NULL DEFAULT '',
+        question_id     INTEGER,
+        question        TEXT        NOT NULL,
+        gold_sql        TEXT        NOT NULL,
+        baseline_sql    TEXT,
+        pipeline_sql    TEXT,
+        baseline_ok     BOOLEAN,
+        pipeline_ok     BOOLEAN,
+        baseline_ex     BOOLEAN,
+        pipeline_ex     BOOLEAN,
+        error_baseline  TEXT,
+        error_pipeline  TEXT,
+        duration_ms     INTEGER,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_eval_results_db ON pgxllm.eval_results(db_alias, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_results_name ON pgxllm.eval_results(db_alias, eval_name)",
 ]
 
 # ── pgvector column alter (run separately after vector extension check) ──

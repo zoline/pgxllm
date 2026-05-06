@@ -14,6 +14,7 @@ export default function DbsPage() {
   const [form, setForm] = useState({
     alias: '', host: 'localhost', port: 5432,
     user: 'postgres', password: '', dbname: '',
+    db_type: 'production',
     schema_mode: 'exclude',
     schemas: 'pg_catalog,information_schema,pg_toast',
   })
@@ -34,7 +35,7 @@ export default function DbsPage() {
       setMsg(`✅ '${form.alias}' 등록 완료`)
       setShowForm(false)
       refreshDbs()
-      setForm({ alias:'', host:'localhost', port:5432, user:'postgres', password:'', dbname:'', schema_mode:'exclude', schemas:'pg_catalog,information_schema,pg_toast' })
+      setForm({ alias:'', host:'localhost', port:5432, user:'postgres', password:'', dbname:'', db_type:'production', schema_mode:'exclude', schemas:'pg_catalog,information_schema,pg_toast' })
     } catch (e) {
       setErr(e.response?.data?.detail || e.message)
     }
@@ -111,7 +112,14 @@ export default function DbsPage() {
                 </div>
               </div>
               {/* Row 3 */}
-              <div style={{ display:'flex', gap:10, marginBottom:14 }}>
+              <div style={{ display:'flex', gap:10, marginBottom:10 }}>
+                <div style={{ flex:1 }}>
+                  <label style={{ fontSize:11, fontWeight:600, color:'var(--gray)', display:'block', marginBottom:4 }}>DB TYPE</label>
+                  <select style={inputStyle} value={form.db_type} onChange={e=>set('db_type',e.target.value)}>
+                    <option value="production">production — 실운영 DB</option>
+                    <option value="benchmark">benchmark — BIRD 평가 전용</option>
+                  </select>
+                </div>
                 <div style={{ flex:1 }}>
                   <label style={{ fontSize:11, fontWeight:600, color:'var(--gray)', display:'block', marginBottom:4 }}>SCHEMA MODE</label>
                   <select style={inputStyle} value={form.schema_mode} onChange={e=>set('schema_mode',e.target.value)}>
@@ -151,7 +159,14 @@ export default function DbsPage() {
           }}>🗄</div>
 
           <div style={{ flex:1 }}>
-            <div style={{ fontWeight:700, fontSize:14 }}>{db.alias}</div>
+            <div style={{ fontWeight:700, fontSize:14, display:'flex', alignItems:'center', gap:8 }}>
+              {db.alias}
+              {db.db_type === 'benchmark' && (
+                <span style={{ padding:'1px 7px', background:'#fef9c3', color:'#854d0e', borderRadius:4, fontSize:10, fontWeight:700, border:'1px solid #fde047' }}>
+                  🧪 BENCHMARK
+                </span>
+              )}
+            </div>
             <div style={{ fontSize:12, color:'var(--gray)', marginTop:2 }}>
               {db.host}:{db.port} / {db.dbname}
             </div>

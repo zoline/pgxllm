@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useDb } from '../components/Layout'
-import { graphApi, rulesApi, pgstatApi } from '../api/client'
+import { graphApi, rulesApi, pgstatApi, evalApi } from '../api/client'
 import { Card, CardHeader, CardBody, Btn, Alert, Badge, CountBadge, Spinner } from '../components/UI'
 import QueryPlanModal from '../components/QueryPlanModal'
 
@@ -1322,9 +1322,10 @@ export function RulesPage() {
                 <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
                   <span style={{ fontFamily:'monospace', fontSize:11, color:'var(--gray)' }}>{r.rule_id}</span>
                   <Badge color={
-                    r.scope === 'global' ? 'navy' :
-                    r.scope === 'db'     ? 'teal' :
-                    r.scope === 'table'  ? 'green' : 'gray'
+                    r.scope === 'global'    ? 'navy' :
+                    r.scope === 'db'        ? 'teal' :
+                    r.scope === 'table'     ? 'green' :
+                    r.scope === 'benchmark' ? 'orange' : 'gray'
                   }>{r.scope}</Badge>
                   {r.auto_detected && <Badge color="teal">auto</Badge>}
                   {!r.enabled && <Badge color="red">disabled</Badge>}
@@ -1349,6 +1350,23 @@ export function RulesPage() {
                       }}>
                       {r.enabled ? '비활성화' : '활성화'}
                     </button>
+                    {r.scope === 'benchmark' && (
+                      <button onClick={async () => {
+                        const target = window.prompt('승격 대상 scope: global 또는 db', 'global')
+                        if (!target) return
+                        try {
+                          await evalApi.promoteRule(db, r.rule_id, { target_scope: target, target_db_alias: db })
+                          load()
+                        } catch (e) { alert(e.response?.data?.detail || e.message) }
+                      }}
+                        style={{
+                          padding:'2px 8px', borderRadius:4, border:'1px solid #fde047',
+                          background:'#fef9c3', color:'#854d0e',
+                          fontSize:11, cursor:'pointer', fontWeight:600,
+                        }}>
+                        ↑ 승격
+                      </button>
+                    )}
                     <button onClick={() => handleDelete(r.rule_id)}
                       style={{
                         padding:'2px 8px', borderRadius:4, border:'1px solid #fca5a5',
@@ -1444,6 +1462,7 @@ function RuleForm({ form, setForm, error, saving, isEdit, onSave, onCancel }) {
             style={{ width:'100%', padding:'6px 8px', fontSize:12, border:'1px solid var(--gray2)', borderRadius:5 }}>
             <option value="global">global (모든 DB)</option>
             <option value="db">db (현재 DB만)</option>
+            <option value="benchmark">benchmark (벤치마크 테스트 전용)</option>
             <option value="table">table</option>
             <option value="column">column</option>
           </select>
